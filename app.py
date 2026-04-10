@@ -1,66 +1,53 @@
+import tempfile
+import os
+
 import streamlit as st
 import pandas as pd
 
-# Import your pipeline
-from flightmode.main import run_analysis, ask_question_streamlit
+from flightmode.pipeline import run_pipeline
 
-st.set_page_config(page_title="FlightMode.ai", layout="wide")
+st.set_page_config(
+    page_title="FlightMode.ai",
+    page_icon="✈️",
+    layout="wide",
+)
 
-st.title("✈️ FlightMode.ai – Travel Intelligence")
-st.caption("Analyze your flights. Maximize savings. Unlock loyalty value.")
+st.title("FlightMode.ai – Travel Intelligence Report")
+st.caption(
+    "Upload your flight history to analyze spending, booking behavior, and missed benefits"
+)
 
-# Upload section
-uploaded_file = st.file_uploader("Upload your travel data (Excel)", type=["xlsx"])
+st.divider()
 
-if uploaded_file:
-    st.success("File uploaded successfully")
+uploaded_file = st.file_uploader(
+    "Upload your travel data file",
+    type=["xlsx", "xls", "csv"],
+    help="Excel file with a Travel Data sheet (and optional Loyalty Data sheet), or a CSV file.",
+)
 
-    if st.button("Analyze My Travel"):
+if uploaded_file is not None:
+    suffix = os.path.splitext(uploaded_file.name)[1]
 
-        with st.spinner("Analyzing your travel patterns..."):
+    with st.spinner("Analyzing your travel data…"):
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(uploaded_file.read())
+                tmp_path = tmp.name
 
-            report, context = run_analysis(uploaded_file)
+            result = run_pipeline(tmp_path)
 
-            st.session_state.report = report
-            st.session_state.context = context
+        except Exception as e:
+            st.error(f"Analysis failed: {e}")
+            st.stop()
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
 
+    st.success("Analysis complete")
 
-# Display Results
-if "report" in st.session_state:
+    st.markdown(result["markdown_report"])
 
-    report = st.session_state.report
-
-    st.divider()
-
-    # Executive Summary
-    st.subheader("📊 Executive Summary")
-    st.info(report.get("executive_summary", "No summary available"))
-
-    st.divider()
-
-    # Top Insights
-    st.subheader("🔥 Top Insights")
-
-    for insight in report.get("top_insights", []):
-        st.markdown(f"""
-        **Observation:** {insight.get('observation', '')}  
-        **Implication:** {insight.get('implication', '')}  
-        **Recommendation:** {insight.get('recommendation', '')}  
-        **Impact:** {insight.get('impact', '')}
-        """)
-        st.divider()
-
-    # Full Report
-    st.subheader("📄 Full Report")
-    st.markdown(report.get("full_report", "No report generated"))
-
-    st.divider()
-
-    # Chat
-    st.subheader("💬 Ask Questions")
-
-    question = st.text_input("Ask about your travel behavior")
-
-    if question:
-        answer = ask_question_streamlit(question, st.session_state.context)
-        st.success(answer)
+    with st.expander("View raw JSON report"):
+        st.json(result["json_report"])
