@@ -102,6 +102,39 @@ def main():
         print(f"\n[Chat] Q: {question}")
         print(f"[Chat] A: {ask_question(question, result['json_report'])}")
 
+import tempfile
+
+def run_analysis(file):
+    """
+    Wrapper for Streamlit UI
+    """
+
+    # Save uploaded file temporarily
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+        tmp.write(file.read())
+        temp_path = tmp.name
+
+    result = run_pipeline(temp_path)
+
+    report = {
+        "executive_summary": result.get("markdown_report", "No summary available"),
+        "top_insights": result.get("json_report", {}).get("insights", []),
+        "full_report": result.get("markdown_report", "No report generated")
+    }
+
+    context = result
+
+    return report, context
+
+
+def ask_question_streamlit(question, context):
+    """
+    Wrapper for chat (uses existing ask_question)
+    """
+    try:
+        return ask_question(question, context.get("json_report", {}))
+    except:
+        return "Unable to answer from report"
 
 if __name__ == "__main__":
     main()
