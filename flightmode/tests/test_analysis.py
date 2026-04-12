@@ -1,5 +1,6 @@
 """Unit tests for FlightMode.ai analysis modules."""
 
+import numpy as np
 import pandas as pd
 import pytest
 from datetime import datetime, timedelta
@@ -9,7 +10,7 @@ from flightmode.analysis.booking import analyze_booking
 from flightmode.analysis.route import analyze_routes
 from flightmode.analysis.loyalty import analyze_loyalty
 from flightmode.analysis.insights import generate_insights
-from flightmode.core.normalization import normalize_travel, _standardize_airline
+from flightmode.core.normalization import normalize_travel, _standardize_airline, _parse_dates
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -222,3 +223,89 @@ class TestNormalization:
         normalized = normalize_travel(df)
         assert "route" in normalized.columns
         assert normalized.iloc[0]["route"] == "DEL → BOM"
+
+
+# ── Pandas boolean safety ─────────────────────────────────────────────────────
+
+class TestPandasBooleanSafety:
+    """
+    Guard against 'truth value of a Series is ambiguous' errors.
+    All values that participate in boolean conditions must be Python scalars.
+    """
+
+    def test_analyze_airline_returns_python_bool(self):
+        df = sample_df()
+        result = analyze_airline(df)
+        assert type(result["is_fragmented"]) is bool
+
+    def test_analyze_airline_fragmented_bool(self):
+        rows = [{"airline": f"A{i}", "origin": "X", "destination": "Y",
+                 "booking_date": datetime(2024, 1, i+1),
+                 "travel_date": datetime(2024, 1, i+2)} for i in range(10)]
+        df = make_travel_df(rows)
+        result = analyze_airline(df)
+        assert type(result["is_fragmented"]) is bool
+
+    def test_analyze_booking_counts_are_python_int(self):
+        base = datetime(2024, 1, 10)
+        rows = [{"airline": "IndiGo", "origin": "DEL", "destination": "BOM",
+                 "booking_date": base - timedelta(days=g), "travel_date": base}
+                for g in [1, 5, 15]]
+        df = make_travel_df(rows)
+        result = analyze_booking(df)
+        assert type(result["last_minute_count"]) is int
+        assert type(result["early_booking_count"]) is int
+        for bucket in result["gap_distribution"].values():
+            assert type(bucket["count"]) is int
+
+    def test_analyze_route_repeated_pct_is_float(self):
+        df = sample_df()
+        result = analyze_routes(df)
+        assert isinstance(result["repeated_route_pct"], float)
+        assert type(result["most_frequent_route_count"]) is int
+
+    def test_loyalty_miles_earned_is_python_int(self):
+        travel = sample_df()
+        pnrs = travel["pnr"].tolist()[:5]
+        loyalty = pd.DataFrame({
+            "pnr": pnrs,
+            "miles_earned": np.array([1000, 1200, 800, 1500, 900], dtype=np.int64),
+        })
+        result = analyze_loyalty(travel, loyalty)
+        assert type(result["miles_already_earned"]) is int
+
+    def test_parse_dates_no_chained_assignment(self):
+        # Exercises the CoW-safe .where() path — must not raise ChainedAssignmentError.
+        # Uses ISO dates (always parseable) and an unparseable value.
+        series = pd.Series(["2024-06-01", "2024-07-15", "not-a-date", None])
+        result = _parse_dates(series, "test_col")
+        # pandas 2.x uses datetime64[us]; older uses datetime64[ns] — accept either
+        assert str(result.dtype).startswith("datetime64")
+        # Valid ISO dates parse correctly
+        assert pd.notna(result.iloc[0])
+        assert pd.notna(result.iloc[1])
+        # Unparseable string → NaT
+        assert pd.isna(result.iloc[2])
+        # None → NaT
+        assert pd.isna(result.iloc[3])
+
+    def test_normalize_travel_no_boolean_series_error(self):
+        # Full normalize_travel() run — would raise if any Series appeared in if-condition
+        base = datetime(2024, 1, 1)
+        rows = []
+        for i in range(5):
+            td = base + timedelta(days=i * 7)
+            rows.append({
+                "airline": "6e",
+                "origin": "del",
+                "destination": "bom",
+                "booking_date": (td - timedelta(days=3)).strftime("%Y-%m-%d"),
+                "travel_date": td.strftime("%Y-%m-%d"),
+                "pnr": f"PNR{i:03d}",
+            })
+        df = pd.DataFrame(rows)
+        df["booking_date"] = pd.to_datetime(df["booking_date"])
+        df["travel_date"] = pd.to_datetime(df["travel_date"])
+        result = normalize_travel(df)
+        assert len(result) == 5
+        assert result["airline"].iloc[0] == "IndiGo"
