@@ -52,12 +52,14 @@ def _standardize_airline(name: str) -> str:
 
 
 def _parse_dates(series: pd.Series, col_name: str) -> pd.Series:
-    # Try ISO format first (YYYY-MM-DD), then fall back to dayfirst=True for DD/MM/YYYY
+    # Try ISO format first (YYYY-MM-DD), then fall back to dayfirst=True for DD/MM/YYYY.
+    # Use .where() to combine results — avoids chained assignment (pandas 2.x CoW safe).
     parsed = pd.to_datetime(series, format="%Y-%m-%d", errors="coerce")
+    fallback = pd.to_datetime(series, dayfirst=True, errors="coerce")
     still_null = parsed.isna() & series.notna()
     if still_null.any():
-        parsed[still_null] = pd.to_datetime(series[still_null], dayfirst=True, errors="coerce")
-    bad = parsed.isna().sum()
+        parsed = parsed.where(~still_null, fallback)
+    bad = int(parsed.isna().sum())
     if bad > 0:
         print(f"  [warn] {bad} unparseable dates in '{col_name}' — set to NaT")
     return parsed
