@@ -88,8 +88,20 @@ class IngestionError(Exception):
 # ── Column helpers (public so tests can import them) ──────────────────────────
 
 def _normalize_col(raw: str) -> str:
-    """Lowercase, strip outer whitespace, collapse internal whitespace to underscores."""
-    return re.sub(r"\s+", "_", raw.strip().lower())
+    """
+    Normalize a column name to a clean lowercase underscore identifier.
+
+    Steps (in order):
+      1. Strip outer whitespace and lowercase
+      2. Remove parenthesised content, e.g. "(YYYY-MM-DD)" → ""
+      3. Replace every run of non-alphanumeric characters with a single underscore
+      4. Strip leading/trailing underscores
+    """
+    col = raw.strip().lower()
+    col = re.sub(r"\(.*?\)", "", col)        # remove bracket content
+    col = re.sub(r"[^a-z0-9]+", "_", col)   # special chars → underscore
+    col = re.sub(r"_+", "_", col)            # collapse multiple underscores
+    return col.strip("_")
 
 
 def _map_columns(columns: list[str]) -> dict[str, str]:
@@ -131,12 +143,38 @@ def _map_columns(columns: list[str]) -> dict[str, str]:
 
 
 def _prepare_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize column names and apply flexible mapping (in-place safe copy)."""
+    """
+    Normalize column names, apply flexible mapping, normalize values,
+    and ensure all required columns exist.
+    """
     df = df.copy()
+
+    # 1. Normalize column names
     df.columns = [_normalize_col(c) for c in df.columns]
+
+    # 2. Map variant names → canonical names
     mapping = _map_columns(list(df.columns))
     if mapping:
         df.rename(columns=mapping, inplace=True)
+
+    # 3. Normalize values (safe — only applied when column is present)
+    if "airline" in df.columns:
+        df["airline"] = df["airline"].astype(str).str.strip().str.title()
+
+    if "booking_date" in df.columns:
+        df["booking_date"] = pd.to_datetime(df["booking_date"], errors="coerce")
+
+    if "travel_date" in df.columns:
+        df["travel_date"] = pd.to_datetime(df["travel_date"], errors="coerce")
+
+    if "amount" in df.columns:
+        df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+
+    # 4. Guarantee required columns exist — prevents KeyError downstream
+    for col in ["airline", "origin", "destination", "booking_date", "travel_date"]:
+        if col not in df.columns:
+            df[col] = None
+
     return df
 
 
@@ -191,7 +229,12 @@ def load_sheets(filepath: str) -> tuple[pd.DataFrame, Optional[pd.DataFrame]]:
         except Exception as e:
             raise IngestionError(f"Failed to read CSV: {e}")
         travel_df = _prepare_df(raw_travel)
+        travel_df = travel_df.dropna(
+            subset=["booking_date", "travel_date", "origin", "destination"]
+        )
         _validate_travel(travel_df)
+        print(f"[Ingestion] Final columns: {travel_df.columns.tolist()}")
+        print(f"[Ingestion] Rows loaded: {len(travel_df)}")
         return travel_df, None
 
     # ── Excel path ────────────────────────────────────────────────────────────
@@ -215,6 +258,9 @@ def load_sheets(filepath: str) -> tuple[pd.DataFrame, Optional[pd.DataFrame]]:
 
     # Prepare travel DataFrame
     travel_df = _prepare_df(sheets[travel_sheet])
+    travel_df = travel_df.dropna(
+        subset=["booking_date", "travel_date", "origin", "destination"]
+    )
     _validate_travel(travel_df)
 
     # Prepare loyalty DataFrame (None if sheet absent or empty)
@@ -224,6 +270,8 @@ def load_sheets(filepath: str) -> tuple[pd.DataFrame, Optional[pd.DataFrame]]:
         if not raw_loyalty.empty:
             loyalty_df = _prepare_df(raw_loyalty)
 
+    print(f"[Ingestion] Final columns: {travel_df.columns.tolist()}")
+    print(f"[Ingestion] Rows loaded: {len(travel_df)}")
     return travel_df, loyalty_df
 
 
@@ -232,8 +280,9 @@ def _validate_travel(df: pd.DataFrame) -> None:
     missing = REQUIRED_COLUMNS - set(df.columns)
     if missing:
         raise IngestionError(
-            f"'Travel_Data' sheet is missing required columns: {sorted(missing)}. "
-            f"Found after mapping: {sorted(df.columns.tolist())}"
+            f"Missing required fields after processing: {sorted(missing)}.\n"
+            f"Detected columns: {sorted(df.columns.tolist())}\n"
+            f"Please check column names in your Excel file."
         )
 
 
