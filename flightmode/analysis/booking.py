@@ -49,8 +49,8 @@ def analyze_booking(df: pd.DataFrame) -> dict[str, Any]:
             "gap_distribution": {},
         }
 
-    last_minute = (valid <= LAST_MINUTE_DAYS).sum()
-    early = (valid >= EARLY_BOOKING_DAYS).sum()
+    last_minute = int((valid <= LAST_MINUTE_DAYS).sum())
+    early = int((valid >= EARLY_BOOKING_DAYS).sum())
 
     buckets = [
         ("0-3 days (last minute)", 0, 3),
@@ -73,9 +73,9 @@ def analyze_booking(df: pd.DataFrame) -> dict[str, Any]:
         "median_booking_gap_days": round(float(valid.median()), 1),
         "min_booking_gap_days": int(valid.min()),
         "max_booking_gap_days": int(valid.max()),
-        "last_minute_count": int(last_minute),
+        "last_minute_count": last_minute,
         "last_minute_pct": round(last_minute / total * 100, 1),
-        "early_booking_count": int(early),
+        "early_booking_count": early,
         "early_booking_pct": round(early / total * 100, 1),
         "gap_distribution": gap_distribution,
     }

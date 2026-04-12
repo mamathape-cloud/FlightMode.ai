@@ -23,7 +23,7 @@ def analyze_routes(df: pd.DataFrame) -> dict[str, Any]:
     route_counts = df["route"].value_counts()
     unique = len(route_counts)
 
-    repeated_flights = int((route_counts[route_counts > 1]).sum())
+    repeated_flights = int((route_counts[route_counts > 1]).sum())  # already safe: explicit int()
     repeated_pct = round(repeated_flights / total * 100, 1) if total else 0.0
 
     top_routes = [

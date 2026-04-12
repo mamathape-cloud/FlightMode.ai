@@ -51,7 +51,7 @@ def analyze_loyalty(
 
     miles_earned = 0
     if "miles_earned" in loyalty_df.columns:
-        miles_earned = int(loyalty_df["miles_earned"].sum(skipna=True))
+        miles_earned = int(loyalty_df["miles_earned"].fillna(0).sum())
 
     return {
         "loyalty_data_available": True,
