@@ -224,6 +224,60 @@ class TestNormalization:
         assert "route" in normalized.columns
         assert normalized.iloc[0]["route"] == "DEL → BOM"
 
+    def test_required_columns_preserved_after_normalization(self):
+        """normalize_travel() must never rename or drop required columns."""
+        base = datetime(2024, 1, 1)
+        df = pd.DataFrame([{
+            "airline": "IndiGo", "origin": "DEL", "destination": "BOM",
+            "booking_date": base - timedelta(days=5),
+            "travel_date": base,
+        }])
+        result = normalize_travel(df)
+        for col in ["airline", "booking_date", "travel_date", "origin", "destination"]:
+            assert col in result.columns, f"Required column '{col}' lost after normalization"
+
+    def test_missing_required_column_raises_before_processing(self):
+        """Safety check raises ValueError immediately if a required column is absent."""
+        base = datetime(2024, 1, 1)
+        df = pd.DataFrame([{
+            "origin": "DEL", "destination": "BOM",
+            "booking_date": base - timedelta(days=5),
+            "travel_date": base,
+            # 'airline' intentionally missing
+        }])
+        with pytest.raises(ValueError, match="'airline' is missing before normalization"):
+            normalize_travel(df)
+
+    def test_already_datetime_columns_not_corrupted(self):
+        """
+        When ingestion pre-converts dates to datetime64, _parse_dates()
+        must short-circuit and leave them intact rather than coercing to NaT.
+        """
+        base = datetime(2024, 6, 1)
+        df = pd.DataFrame([{
+            "airline": "IndiGo", "origin": "DEL", "destination": "BOM",
+            "booking_date": pd.Timestamp("2024-05-27"),
+            "travel_date":  pd.Timestamp("2024-06-01"),
+        }])
+        result = normalize_travel(df)
+        assert pd.notna(result.iloc[0]["booking_date"])
+        assert pd.notna(result.iloc[0]["travel_date"])
+
+    def test_normalize_loyalty_preserves_columns(self):
+        """normalize_loyalty() must not rename loyalty columns."""
+        from flightmode.core.normalization import normalize_loyalty
+        df = pd.DataFrame([{
+            "pnr": "FM123", "airline": "IndiGo",
+            "loyalty_program": "6E Rewards", "miles_earned": 800,
+        }])
+        result = normalize_loyalty(df)
+        for col in ["pnr", "airline", "loyalty_program", "miles_earned"]:
+            assert col in result.columns
+
+    def test_normalize_loyalty_none_returns_none(self):
+        from flightmode.core.normalization import normalize_loyalty
+        assert normalize_loyalty(None) is None
+
 
 # ── Pandas boolean safety ─────────────────────────────────────────────────────
 
