@@ -4,7 +4,8 @@ import os
 import streamlit as st
 import pandas as pd
 
-from flightmode.pipeline import run_pipeline_from_file
+# ✅ FIX: import correct function
+from flightmode.pipeline import run_pipeline
 
 st.set_page_config(
     page_title="FlightMode.ai",
@@ -22,7 +23,7 @@ st.divider()
 uploaded_file = st.file_uploader(
     "Upload your travel data file",
     type=["xlsx", "xls", "csv"],
-    help="Excel file with a Travel Data sheet (and optional Loyalty Data sheet), or a CSV file.",
+    help="Excel file with a Travel_Data sheet (and optional Loyalty_Data sheet), or a CSV file.",
 )
 
 if uploaded_file is not None:
@@ -34,7 +35,17 @@ if uploaded_file is not None:
                 tmp.write(uploaded_file.read())
                 tmp_path = tmp.name
 
-            result = run_pipeline_from_file(tmp_path)
+            # ✅ FIX: read sheets here (instead of pipeline_from_file)
+            sheets = pd.read_excel(tmp_path, sheet_name=None)
+
+            travel_df = sheets.get("Travel_Data")
+            loyalty_df = sheets.get("Loyalty_Data")
+
+            if travel_df is None:
+                raise ValueError("Travel_Data sheet is required")
+
+            # ✅ FIX: call correct pipeline
+            result = run_pipeline(travel_df, loyalty_df)
 
         except Exception as e:
             st.error(f"Analysis failed: {e}")
