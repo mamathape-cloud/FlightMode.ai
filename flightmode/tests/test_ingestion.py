@@ -89,27 +89,34 @@ class TestNormalizeCol:
     def test_already_clean(self):
         assert _normalize_col("airline") == "airline"
 
-    def test_mixed_case(self):
-        assert _normalize_col("Destination_(Airport_Code)") == "destination_(airport_code)"
+    def test_brackets_stripped(self):
+        # Bracket content removed → resolves directly to canonical name
+        assert _normalize_col("Destination_(Airport_Code)") == "destination"
+
+    def test_format_hint_in_brackets_stripped(self):
+        assert _normalize_col("Booking_Date (YYYY-MM-DD)") == "booking_date"
+        assert _normalize_col("Travel Date (YYYY-MM-DD)") == "travel_date"
+
+    def test_uppercase_normalized(self):
+        assert _normalize_col("AIRLINE") == "airline"
+        assert _normalize_col("BOOKING_DATE") == "booking_date"
+
+    def test_special_chars_become_underscores(self):
+        assert _normalize_col("origin/airport") == "origin_airport"
+        assert _normalize_col("travel-date") == "travel_date"
 
 
 # ── _map_columns ──────────────────────────────────────────────────────────────
 
 class TestMapColumns:
+    """
+    _map_columns() receives column names that have ALREADY been through
+    _normalize_col(). Because _normalize_col() now strips bracket content,
+    columns like "booking_date_(yyyy-mm-dd)" arrive as "booking_date" and
+    need no alias lookup. Tests reflect the post-normalization state.
+    """
 
-    # Pass 1: exact alias
-    def test_pass1_booking_date_yyyy(self):
-        assert _map_columns(["booking_date_(yyyy-mm-dd)"])["booking_date_(yyyy-mm-dd)"] == "booking_date"
-
-    def test_pass1_travel_date_yyyy(self):
-        assert _map_columns(["travel_date_(yyyy-mm-dd)"])["travel_date_(yyyy-mm-dd)"] == "travel_date"
-
-    def test_pass1_origin_airport_code(self):
-        assert _map_columns(["origin_(airport_code)"])["origin_(airport_code)"] == "origin"
-
-    def test_pass1_destination_airport_code(self):
-        assert _map_columns(["destination_(airport_code)"])["destination_(airport_code)"] == "destination"
-
+    # Pass 1: exact alias (non-bracket variants that still need aliasing)
     def test_pass1_departure_alias(self):
         assert _map_columns(["departure"])["departure"] == "origin"
 
@@ -125,10 +132,16 @@ class TestMapColumns:
     def test_pass1_date_of_booking(self):
         assert _map_columns(["date_of_booking"])["date_of_booking"] == "booking_date"
 
-    # Pass 2: prefix match
-    def test_pass2_booking_date_suffix(self):
-        assert _map_columns(["booking_date_(custom)"])["booking_date_(custom)"] == "booking_date"
+    def test_pass1_origin_airport(self):
+        assert _map_columns(["origin_airport"])["origin_airport"] == "origin"
 
+    def test_pass1_destination_airport(self):
+        assert _map_columns(["destination_airport"])["destination_airport"] == "destination"
+
+    def test_pass1_airline_name(self):
+        assert _map_columns(["airline_name"])["airline_name"] == "airline"
+
+    # Pass 2: prefix match (non-bracket suffixes that survive normalization)
     def test_pass2_travel_date_utc(self):
         assert _map_columns(["travel_date_utc"])["travel_date_utc"] == "travel_date"
 
@@ -157,14 +170,18 @@ class TestMapColumns:
     def test_pass3_contains_airline(self):
         assert _map_columns(["preferred_airline_code"])["preferred_airline_code"] == "airline"
 
+    # Canonical names must not be remapped
     def test_canonical_untouched(self):
         cols = ["airline", "origin", "destination", "booking_date", "travel_date"]
         assert _map_columns(cols) == {}
 
+    # Mixed scenario
     def test_mixed_columns(self):
-        cols = ["booking_date_(yyyy-mm-dd)", "pnr", "fare", "carrier"]
+        # After _normalize_col, "booking_date_(yyyy-mm-dd)" becomes "booking_date"
+        # so it's already canonical and not in the mapping
+        cols = ["booking_date", "pnr", "fare", "carrier"]
         m = _map_columns(cols)
-        assert m["booking_date_(yyyy-mm-dd)"] == "booking_date"
+        assert "booking_date" not in m        # already canonical
         assert m["carrier"] == "airline"
         assert "pnr" not in m
         assert "fare" not in m
@@ -324,14 +341,33 @@ class TestLoadSheets:
         finally:
             os.unlink(path)
 
-    def test_missing_required_travel_column_raises(self):
-        """Travel_Data sheet present but missing 'destination' → IngestionError."""
+    def test_missing_destination_column_filled_with_none(self):
+        """
+        A missing required column is filled with None (Change 3 — prevents KeyError).
+        Rows that then have NaN in destination are dropped by dropna().
+        The result is an empty travel DataFrame — no crash.
+        """
         cols = ["airline", "origin", "booking_date", "travel_date"]  # no destination
         rows = [{"airline": "IndiGo", "origin": "DEL",
                  "booking_date": "2024-06-01", "travel_date": "2024-06-10"}]
         path = _make_excel(travel_cols=cols, travel_rows=rows, include_loyalty=False)
         try:
-            with pytest.raises(IngestionError, match="missing required columns"):
+            travel, _ = load_sheets(path)
+            # Required column was added as None, then row dropped by dropna → 0 rows
+            assert "destination" in travel.columns
+            assert len(travel) == 0
+        finally:
+            os.unlink(path)
+
+    def test_truly_absent_travel_sheet_raises(self):
+        """No recognisable Travel_Data sheet at all → IngestionError."""
+        t_df = pd.DataFrame([TRAVEL_ROW], columns=TRAVEL_COLS)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as f:
+            path = f.name
+        try:
+            with pd.ExcelWriter(path, engine="openpyxl") as writer:
+                t_df.to_excel(writer, sheet_name="RandomSheet", index=False)
+            with pytest.raises(IngestionError, match="Travel_Data.*sheet is required"):
                 load_sheets(path)
         finally:
             os.unlink(path)
