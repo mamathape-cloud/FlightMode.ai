@@ -4,7 +4,7 @@ import os
 import streamlit as st
 import pandas as pd
 
-from flightmode.pipeline import run_pipeline
+from flightmode.pipeline import run_pipeline_from_file
 
 st.set_page_config(
     page_title="FlightMode.ai",
@@ -34,7 +34,7 @@ if uploaded_file is not None:
                 tmp.write(uploaded_file.read())
                 tmp_path = tmp.name
 
-            result = run_pipeline(tmp_path)
+            result = run_pipeline_from_file(tmp_path)
 
         except Exception as e:
             st.error(f"Analysis failed: {e}")

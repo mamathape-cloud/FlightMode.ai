@@ -122,8 +122,8 @@ def create_sample_excel(output_path: str = None) -> str:
     loyalty_df = generate_loyalty_data(travel_df)
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        travel_df.to_excel(writer, sheet_name="Travel Data", index=False)
-        loyalty_df.to_excel(writer, sheet_name="Loyalty Data", index=False)
+        travel_df.to_excel(writer, sheet_name="Travel_Data", index=False)
+        loyalty_df.to_excel(writer, sheet_name="Loyalty_Data", index=False)
 
     print(f"Sample dataset written to: {output_path}")
     print(f"  Travel rows: {len(travel_df)}, Loyalty rows: {len(loyalty_df)}")

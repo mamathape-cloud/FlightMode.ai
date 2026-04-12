@@ -10,7 +10,7 @@ import json
 import sys
 from pathlib import Path
 
-from flightmode.pipeline import run_pipeline
+from flightmode.pipeline import run_pipeline_from_file
 from flightmode.chat.qa import ask_question
 
 
@@ -35,7 +35,7 @@ def run_demo():
     print("=" * 60)
 
     sample_path = create_sample_excel()
-    result = run_pipeline(sample_path)
+    result = run_pipeline_from_file(sample_path)
 
     report_dir = Path(__file__).parent.parent / "output"
     report_dir.mkdir(exist_ok=True)
@@ -80,7 +80,7 @@ def main():
         print(f"Error: File not found: {filepath}")
         sys.exit(1)
 
-    result = run_pipeline(filepath)
+    result = run_pipeline_from_file(filepath)
 
     output_dir = Path(filepath).parent / "output"
     output_dir.mkdir(exist_ok=True)
