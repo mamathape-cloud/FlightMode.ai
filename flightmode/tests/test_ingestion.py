@@ -1,10 +1,11 @@
-"""Tests for flexible column mapping in the ingestion layer.
+"""Tests for the ingestion layer.
 
-Covers all three mapping passes:
-  Pass 1 — exact alias table
-  Pass 2 — prefix regex match
-  Pass 3 — contains match
-And validates that mapping always precedes column validation.
+Covers:
+  - _normalize_col()
+  - _map_columns() — all three passes
+  - load_sheets() — sheet discovery, missing sheets, flexible column names
+  - ingest() — end-to-end dict output
+  - Backward-compatible helpers load_travel_data() / load_loyalty_data()
 """
 
 import os
@@ -16,44 +17,61 @@ import pytest
 from flightmode.core.ingestion import (
     _normalize_col,
     _map_columns,
+    load_sheets,
     load_travel_data,
+    load_loyalty_data,
+    ingest,
     IngestionError,
 )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _write_excel(columns: list[str], suffix: str = ".xlsx") -> str:
-    """Write a one-row Excel (or CSV) file with the given column names."""
-    row = {}
-    for c in columns:
-        cl = c.lower()
-        if any(k in cl for k in ("airline", "carrier")):
-            row[c] = "IndiGo"
-        elif any(k in cl for k in ("origin", "departure", "from", "source")):
-            row[c] = "DEL"
-        elif any(k in cl for k in ("destination", "arrival", "to")):
-            row[c] = "BOM"
-        else:
-            row[c] = "2024-06-01"
+TRAVEL_COLS = ["airline", "origin", "destination", "booking_date", "travel_date"]
+TRAVEL_ROW  = {
+    "airline": "IndiGo", "origin": "DEL", "destination": "BOM",
+    "booking_date": "2024-06-01", "travel_date": "2024-06-10",
+}
+LOYALTY_COLS = ["PNR", "airline", "loyalty_program", "miles_earned"]
+LOYALTY_ROW  = {"PNR": "FM123", "airline": "IndiGo", "loyalty_program": "6E Rewards", "miles_earned": 800}
 
-    df = pd.DataFrame([row])
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
+
+def _make_excel(
+    travel_cols: list[str] = None,
+    travel_rows: list[dict] = None,
+    loyalty_cols: list[str] = None,
+    loyalty_rows: list[dict] = None,
+    travel_sheet: str = "Travel_Data",
+    loyalty_sheet: str = "Loyalty_Data",
+    include_loyalty: bool = True,
+) -> str:
+    """Write a temp Excel file and return its path."""
+    travel_cols = travel_cols or TRAVEL_COLS
+    travel_rows = travel_rows or [TRAVEL_ROW]
+    loyalty_rows = loyalty_rows or [LOYALTY_ROW]
+
+    t_df = pd.DataFrame(travel_rows, columns=travel_cols)
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as f:
         path = f.name
 
-    if suffix == ".csv":
-        df.to_csv(path, index=False)
-    else:
-        df.to_excel(path, index=False, sheet_name="Travel Data")
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        t_df.to_excel(writer, sheet_name=travel_sheet, index=False)
+        if include_loyalty:
+            l_df = pd.DataFrame(loyalty_rows, columns=loyalty_cols or LOYALTY_COLS)
+            l_df.to_excel(writer, sheet_name=loyalty_sheet, index=False)
+
     return path
 
 
-def _load(columns: list[str], suffix: str = ".xlsx") -> pd.DataFrame:
-    path = _write_excel(columns, suffix)
-    try:
-        return load_travel_data(path)
-    finally:
-        os.unlink(path)
+def _make_csv(cols: list[str] = None, rows: list[dict] = None) -> str:
+    cols = cols or TRAVEL_COLS
+    rows = rows or [TRAVEL_ROW]
+    df = pd.DataFrame(rows, columns=cols)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode="w") as f:
+        path = f.name
+    df.to_csv(path, index=False)
+    return path
 
 
 # ── _normalize_col ────────────────────────────────────────────────────────────
@@ -66,7 +84,6 @@ class TestNormalizeCol:
         assert _normalize_col("Travel Date") == "travel_date"
 
     def test_multiple_spaces_collapsed(self):
-        # Multiple spaces collapse to a single underscore
         assert _normalize_col("Origin  Airport") == "origin_airport"
 
     def test_already_clean(self):
@@ -80,7 +97,7 @@ class TestNormalizeCol:
 
 class TestMapColumns:
 
-    # Pass 1: explicit alias
+    # Pass 1: exact alias
     def test_pass1_booking_date_yyyy(self):
         assert _map_columns(["booking_date_(yyyy-mm-dd)"])["booking_date_(yyyy-mm-dd)"] == "booking_date"
 
@@ -140,12 +157,10 @@ class TestMapColumns:
     def test_pass3_contains_airline(self):
         assert _map_columns(["preferred_airline_code"])["preferred_airline_code"] == "airline"
 
-    # Canonical names must not be remapped
     def test_canonical_untouched(self):
         cols = ["airline", "origin", "destination", "booking_date", "travel_date"]
         assert _map_columns(cols) == {}
 
-    # Mixed scenario
     def test_mixed_columns(self):
         cols = ["booking_date_(yyyy-mm-dd)", "pnr", "fare", "carrier"]
         m = _map_columns(cols)
@@ -155,93 +170,289 @@ class TestMapColumns:
         assert "fare" not in m
 
 
-# ── load_travel_data integration ──────────────────────────────────────────────
+# ── load_sheets ───────────────────────────────────────────────────────────────
 
-class TestLoadTravelDataFlexibleColumns:
+class TestLoadSheets:
 
-    def test_canonical_columns(self):
-        df = _load(["airline", "origin", "destination", "booking_date", "travel_date"])
-        for col in ["airline", "origin", "destination", "booking_date", "travel_date"]:
-            assert col in df.columns
+    # ── Happy paths ────────────────────────────────────────────────────────────
 
-    def test_verbose_date_columns(self):
-        df = _load([
+    def test_both_sheets_present(self):
+        path = _make_excel()
+        try:
+            travel, loyalty = load_sheets(path)
+            assert travel is not None
+            assert loyalty is not None
+            for col in ["airline", "origin", "destination", "booking_date", "travel_date"]:
+                assert col in travel.columns
+        finally:
+            os.unlink(path)
+
+    def test_travel_only_no_loyalty_sheet(self):
+        path = _make_excel(include_loyalty=False)
+        try:
+            travel, loyalty = load_sheets(path)
+            assert travel is not None
+            assert loyalty is None
+        finally:
+            os.unlink(path)
+
+    def test_csv_travel_only(self):
+        path = _make_csv()
+        try:
+            travel, loyalty = load_sheets(path)
+            assert travel is not None
+            assert loyalty is None
+        finally:
+            os.unlink(path)
+
+    def test_canonical_columns_pass(self):
+        path = _make_excel()
+        try:
+            travel, _ = load_sheets(path)
+            assert set(TRAVEL_COLS).issubset(set(travel.columns))
+        finally:
+            os.unlink(path)
+
+    # ── Sheet name variants ────────────────────────────────────────────────────
+
+    def test_travel_data_underscore_sheet_name(self):
+        path = _make_excel(travel_sheet="Travel_Data", loyalty_sheet="Loyalty_Data")
+        try:
+            travel, loyalty = load_sheets(path)
+            assert travel is not None
+            assert loyalty is not None
+        finally:
+            os.unlink(path)
+
+    def test_travel_data_space_sheet_name(self):
+        path = _make_excel(travel_sheet="Travel Data", loyalty_sheet="Loyalty Data")
+        try:
+            travel, loyalty = load_sheets(path)
+            assert travel is not None
+        finally:
+            os.unlink(path)
+
+    def test_lowercase_sheet_names(self):
+        path = _make_excel(travel_sheet="travel_data", loyalty_sheet="loyalty_data")
+        try:
+            travel, loyalty = load_sheets(path)
+            assert travel is not None
+        finally:
+            os.unlink(path)
+
+    # ── Flexible column names ──────────────────────────────────────────────────
+
+    def test_verbose_date_column_names(self):
+        cols = [
             "airline",
             "origin_(airport_code)",
             "destination_(airport_code)",
             "booking_date_(yyyy-mm-dd)",
             "travel_date_(yyyy-mm-dd)",
-        ])
-        assert "booking_date" in df.columns
-        assert "travel_date" in df.columns
-        assert "origin" in df.columns
-        assert "destination" in df.columns
+        ]
+        rows = [{
+            "airline": "IndiGo",
+            "origin_(airport_code)": "DEL",
+            "destination_(airport_code)": "BOM",
+            "booking_date_(yyyy-mm-dd)": "2024-06-01",
+            "travel_date_(yyyy-mm-dd)": "2024-06-10",
+        }]
+        path = _make_excel(travel_cols=cols, travel_rows=rows)
+        try:
+            travel, _ = load_sheets(path)
+            assert "booking_date" in travel.columns
+            assert "travel_date" in travel.columns
+            assert "origin" in travel.columns
+            assert "destination" in travel.columns
+        finally:
+            os.unlink(path)
 
-    def test_departure_arrival_aliases(self):
-        df = _load(["airline", "departure", "arrival", "booking_date", "travel_date"])
-        assert "origin" in df.columns
-        assert "destination" in df.columns
+    def test_departure_arrival_column_names(self):
+        cols = ["airline", "departure", "arrival", "booking_date", "travel_date"]
+        rows = [{"airline": "IndiGo", "departure": "DEL", "arrival": "BOM",
+                 "booking_date": "2024-06-01", "travel_date": "2024-06-10"}]
+        path = _make_excel(travel_cols=cols, travel_rows=rows)
+        try:
+            travel, _ = load_sheets(path)
+            assert "origin" in travel.columns
+            assert "destination" in travel.columns
+        finally:
+            os.unlink(path)
 
-    def test_carrier_alias(self):
-        df = _load(["carrier", "origin", "destination", "booking_date", "travel_date"])
-        assert "airline" in df.columns
+    def test_uppercase_column_names(self):
+        cols = ["AIRLINE", "ORIGIN", "DESTINATION", "BOOKING_DATE", "TRAVEL_DATE"]
+        rows = [{"AIRLINE": "IndiGo", "ORIGIN": "DEL", "DESTINATION": "BOM",
+                 "BOOKING_DATE": "2024-06-01", "TRAVEL_DATE": "2024-06-10"}]
+        path = _make_excel(travel_cols=cols, travel_rows=rows)
+        try:
+            travel, _ = load_sheets(path)
+            for col in ["airline", "origin", "destination", "booking_date", "travel_date"]:
+                assert col in travel.columns
+        finally:
+            os.unlink(path)
 
-    def test_contains_match_columns(self):
-        # Column names where the keyword is embedded, not a prefix
-        df = _load([
-            "preferred_airline_code",
-            "port_of_origin",
-            "final_destination_code",
-            "dep_booking_date",
-            "actual_travel_date",
-        ])
-        assert "airline" in df.columns
-        assert "origin" in df.columns
-        assert "destination" in df.columns
-        assert "booking_date" in df.columns
-        assert "travel_date" in df.columns
+    def test_columns_with_spaces(self):
+        cols = ["Airline Name", "Origin Airport", "Destination Airport",
+                "Booking Date (YYYY-MM-DD)", "Travel Date (YYYY-MM-DD)"]
+        rows = [{"Airline Name": "IndiGo", "Origin Airport": "DEL",
+                 "Destination Airport": "BOM",
+                 "Booking Date (YYYY-MM-DD)": "2024-06-01",
+                 "Travel Date (YYYY-MM-DD)": "2024-06-10"}]
+        path = _make_excel(travel_cols=cols, travel_rows=rows)
+        try:
+            travel, _ = load_sheets(path)
+            assert "airline" in travel.columns
+            assert "origin" in travel.columns
+            assert "destination" in travel.columns
+            assert "booking_date" in travel.columns
+            assert "travel_date" in travel.columns
+        finally:
+            os.unlink(path)
 
-    def test_csv_file(self):
-        df = _load(
-            ["airline", "origin_(airport_code)", "destination_(airport_code)",
-             "booking_date_(yyyy-mm-dd)", "travel_date_(yyyy-mm-dd)"],
-            suffix=".csv",
-        )
-        assert "origin" in df.columns
-        assert "destination" in df.columns
+    # ── Error paths ────────────────────────────────────────────────────────────
 
-    def test_uppercase_column_names_normalized(self):
-        df = _load(["AIRLINE", "ORIGIN", "DESTINATION", "BOOKING_DATE", "TRAVEL_DATE"])
-        for col in ["airline", "origin", "destination", "booking_date", "travel_date"]:
-            assert col in df.columns
+    def test_missing_travel_data_sheet_raises(self):
+        """No Travel_Data or recognizable travel sheet → IngestionError."""
+        t_df = pd.DataFrame([TRAVEL_ROW], columns=TRAVEL_COLS)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as f:
+            path = f.name
+        try:
+            with pd.ExcelWriter(path, engine="openpyxl") as writer:
+                t_df.to_excel(writer, sheet_name="Sheet1", index=False)
+            with pytest.raises(IngestionError, match="Travel_Data.*sheet is required"):
+                load_sheets(path)
+        finally:
+            os.unlink(path)
 
-    def test_mixed_case_with_spaces(self):
-        df = _load([
-            "Airline Name",
-            "Origin Airport Code",
-            "Destination Airport Code",
-            "Booking Date (YYYY-MM-DD)",
-            "Travel Date (YYYY-MM-DD)",
-        ])
-        assert "airline" in df.columns
-        assert "origin" in df.columns
-        assert "destination" in df.columns
-        assert "booking_date" in df.columns
-        assert "travel_date" in df.columns
+    def test_missing_required_travel_column_raises(self):
+        """Travel_Data sheet present but missing 'destination' → IngestionError."""
+        cols = ["airline", "origin", "booking_date", "travel_date"]  # no destination
+        rows = [{"airline": "IndiGo", "origin": "DEL",
+                 "booking_date": "2024-06-01", "travel_date": "2024-06-10"}]
+        path = _make_excel(travel_cols=cols, travel_rows=rows, include_loyalty=False)
+        try:
+            with pytest.raises(IngestionError, match="missing required columns"):
+                load_sheets(path)
+        finally:
+            os.unlink(path)
 
-    def test_missing_required_column_raises_after_mapping(self):
-        with pytest.raises(IngestionError, match="Missing required columns"):
-            _load(["airline", "origin", "booking_date", "travel_date"])  # no destination
+    def test_file_not_found_raises(self):
+        with pytest.raises(IngestionError, match="File not found"):
+            load_sheets("/nonexistent/path/file.xlsx")
 
-    def test_downstream_columns_are_standard(self):
-        """All downstream modules must receive canonical column names."""
-        df = _load([
-            "carrier",
-            "departure_airport",
-            "arrival_airport",
-            "booking_date_(yyyy-mm-dd)",
-            "travel_date_(yyyy-mm-dd)",
-        ])
-        assert set(["airline", "origin", "destination", "booking_date", "travel_date"]).issubset(
-            set(df.columns)
-        )
+    def test_unsupported_format_raises(self):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as f:
+            f.write(b"{}")
+            path = f.name
+        try:
+            with pytest.raises(IngestionError, match="Unsupported file format"):
+                load_sheets(path)
+        finally:
+            os.unlink(path)
+
+    # ── Graceful handling ──────────────────────────────────────────────────────
+
+    def test_empty_loyalty_sheet_treated_as_none(self):
+        """An empty Loyalty_Data sheet → loyalty_df is None (not empty DataFrame)."""
+        t_df = pd.DataFrame([TRAVEL_ROW], columns=TRAVEL_COLS)
+        l_df = pd.DataFrame(columns=LOYALTY_COLS)  # empty
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as f:
+            path = f.name
+        try:
+            with pd.ExcelWriter(path, engine="openpyxl") as writer:
+                t_df.to_excel(writer, sheet_name="Travel_Data", index=False)
+                l_df.to_excel(writer, sheet_name="Loyalty_Data", index=False)
+            _, loyalty = load_sheets(path)
+            assert loyalty is None
+        finally:
+            os.unlink(path)
+
+    def test_downstream_columns_are_canonical(self):
+        """After load_sheets(), all required columns use canonical names."""
+        cols = ["carrier", "departure_airport", "arrival_airport",
+                "booking_date_(yyyy-mm-dd)", "travel_date_(yyyy-mm-dd)"]
+        rows = [{"carrier": "IndiGo", "departure_airport": "DEL",
+                 "arrival_airport": "BOM",
+                 "booking_date_(yyyy-mm-dd)": "2024-06-01",
+                 "travel_date_(yyyy-mm-dd)": "2024-06-10"}]
+        path = _make_excel(travel_cols=cols, travel_rows=rows, include_loyalty=False)
+        try:
+            travel, _ = load_sheets(path)
+            assert set(["airline", "origin", "destination", "booking_date", "travel_date"]).issubset(
+                set(travel.columns)
+            )
+        finally:
+            os.unlink(path)
+
+
+# ── ingest() dict output ──────────────────────────────────────────────────────
+
+class TestIngest:
+
+    def test_returns_required_keys(self):
+        path = _make_excel()
+        try:
+            result = ingest(path)
+            assert "travel" in result
+            assert "loyalty" in result
+            assert "source_file" in result
+            assert "row_count" in result
+            assert "has_loyalty" in result
+        finally:
+            os.unlink(path)
+
+    def test_has_loyalty_true_when_sheet_present(self):
+        path = _make_excel(include_loyalty=True)
+        try:
+            result = ingest(path)
+            assert result["has_loyalty"] is True
+            assert result["loyalty"] is not None
+        finally:
+            os.unlink(path)
+
+    def test_has_loyalty_false_when_sheet_absent(self):
+        path = _make_excel(include_loyalty=False)
+        try:
+            result = ingest(path)
+            assert result["has_loyalty"] is False
+            assert result["loyalty"] is None
+        finally:
+            os.unlink(path)
+
+    def test_row_count_matches_travel_rows(self):
+        path = _make_excel(travel_rows=[TRAVEL_ROW, TRAVEL_ROW])
+        try:
+            result = ingest(path)
+            assert result["row_count"] == 2
+        finally:
+            os.unlink(path)
+
+
+# ── Backward-compatible helpers ───────────────────────────────────────────────
+
+class TestBackwardCompatHelpers:
+
+    def test_load_travel_data_returns_dataframe(self):
+        path = _make_excel()
+        try:
+            df = load_travel_data(path)
+            assert isinstance(df, pd.DataFrame)
+            assert "airline" in df.columns
+        finally:
+            os.unlink(path)
+
+    def test_load_loyalty_data_returns_dataframe(self):
+        path = _make_excel(include_loyalty=True)
+        try:
+            df = load_loyalty_data(path)
+            assert isinstance(df, pd.DataFrame)
+        finally:
+            os.unlink(path)
+
+    def test_load_loyalty_data_returns_none_when_absent(self):
+        path = _make_excel(include_loyalty=False)
+        try:
+            df = load_loyalty_data(path)
+            assert df is None
+        finally:
+            os.unlink(path)
