@@ -1,6 +1,5 @@
 import tempfile
 import os
-import re
 
 import streamlit as st
 
@@ -17,23 +16,6 @@ st.set_page_config(
 # ── Global CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-/* ── Report section border ──────────────────────────────── */
-.fm-section {
-    border: 1.5px solid #d0d7e3;
-    border-radius: 6px;
-    padding: 20px 24px 16px 24px;
-    margin-bottom: 20px;
-    background: #ffffff;
-}
-.fm-section-heading {
-    font-size: 1.05rem;
-    font-weight: 700;
-    color: #1e1e32;
-    margin: 0 0 12px 0;
-    padding-bottom: 8px;
-    border-bottom: 1.5px solid #d0d7e3;
-}
-
 /* ── PDF download button ────────────────────────────────── */
 div[data-testid="stDownloadButton"] > button {
     background-color: #111111 !important;
@@ -146,69 +128,5 @@ if analyse_clicked and uploaded_file is not None:
 
     st.divider()
 
-    # ── Bordered-section report rendering ────────────────────────────────────
-    _SECTION_RE = re.compile(r"^#{1,3} ", re.MULTILINE)
-
-    def _render_sections(markdown_text: str) -> None:
-        """
-        Split the Markdown report on section headings and render each
-        section (heading + body) inside a single bordered block.
-        No rounded card shell — just a clean border around heading + content.
-        """
-        heading_starts = [m.start() for m in _SECTION_RE.finditer(markdown_text)]
-
-        if not heading_starts:
-            st.markdown(markdown_text)
-            return
-
-        # Preamble before the first heading (report title / meta block)
-        preamble = markdown_text[: heading_starts[0]].strip()
-        if preamble:
-            clean = re.sub(r"\n---\s*$", "", preamble).strip()
-            st.markdown(
-                f'<div class="fm-section">{clean}</div>',
-                unsafe_allow_html=True,
-            )
-
-        for i, start in enumerate(heading_starts):
-            end = heading_starts[i + 1] if i + 1 < len(heading_starts) else len(markdown_text)
-            section_md = markdown_text[start:end].strip()
-            if not section_md:
-                continue
-
-            # Split heading from body
-            first_newline = section_md.find("\n")
-            if first_newline == -1:
-                heading_line = section_md
-                body_md = ""
-            else:
-                heading_line = section_md[:first_newline].strip()
-                body_md = section_md[first_newline:].strip()
-
-            # Remove leading # characters for plain-text heading
-            title_text = heading_line.lstrip("#").strip()
-            # Strip trailing horizontal rule from body
-            body_md = re.sub(r"\n---\s*$", "", body_md).strip()
-
-            # Heading rendered as styled div; body rendered via st.markdown
-            # so tables, bold, lists all get native Streamlit treatment
-            st.markdown(
-                f'<div class="fm-section">'
-                f'<div class="fm-section-heading">{title_text}</div>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-            if body_md:
-                # Wrap body in a thin inner container so it visually connects
-                # to the heading border above
-                with st.container():
-                    st.markdown(
-                        f'<div style="border:1.5px solid #d0d7e3; border-top:none; '
-                        f'border-radius:0 0 6px 6px; padding:0 24px 16px 24px; '
-                        f'margin-top:-20px; margin-bottom:20px; background:#ffffff;">',
-                        unsafe_allow_html=True,
-                    )
-                    st.markdown(body_md)
-                    st.markdown("</div>", unsafe_allow_html=True)
-
-    _render_sections(result["markdown_report"])
+    # ── Report — plain continuous rendering, no decorative wrappers ─────────
+    st.markdown(result["markdown_report"])
