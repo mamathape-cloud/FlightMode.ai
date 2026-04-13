@@ -92,15 +92,23 @@ def _normalize_col(raw: str) -> str:
     Normalize a column name to a clean lowercase underscore identifier.
 
     Steps (in order):
-      1. Strip outer whitespace and lowercase
+      1. Strip outer whitespace
       2. Remove parenthesised content, e.g. "(YYYY-MM-DD)" → ""
-      3. Replace every run of non-alphanumeric characters with a single underscore
-      4. Strip leading/trailing underscores
+      3. Insert underscore between CamelCase word boundaries so that
+         "BookingDate" → "Booking_Date" and "TravelDate" → "Travel_Date"
+         before lowercasing, enabling consistent matching regardless of
+         whether the user used CamelCase, Title_Case, or lowercase.
+      4. Lowercase the whole string
+      5. Replace every run of non-alphanumeric characters with a single underscore
+      6. Collapse multiple underscores and strip leading/trailing ones
     """
-    col = raw.strip().lower()
-    col = re.sub(r"\(.*?\)", "", col)        # remove bracket content
-    col = re.sub(r"[^a-z0-9]+", "_", col)   # special chars → underscore
-    col = re.sub(r"_+", "_", col)            # collapse multiple underscores
+    col = raw.strip()
+    col = re.sub(r"\(.*?\)", "", col)                      # remove bracket content
+    col = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", col)     # camelCase → camel_Case
+    col = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", col)  # ABCDef → ABC_Def
+    col = col.lower()
+    col = re.sub(r"[^a-z0-9]+", "_", col)                 # special chars → underscore
+    col = re.sub(r"_+", "_", col)                          # collapse underscores
     return col.strip("_")
 
 
