@@ -17,27 +17,21 @@ st.set_page_config(
 # ── Global CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-/* ── Report card shell ─────────────────────────────────── */
-.fm-card {
+/* ── Report section border ──────────────────────────────── */
+.fm-section {
+    border: 1.5px solid #d0d7e3;
+    border-radius: 6px;
+    padding: 20px 24px 16px 24px;
+    margin-bottom: 20px;
     background: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 12px;
-    padding: 24px 28px;
-    margin-bottom: 18px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
 }
-.fm-card h2, .fm-card h3 {
-    margin-top: 0;
-    color: #1e1e32;
-}
-.fm-card-title {
+.fm-section-heading {
     font-size: 1.05rem;
     font-weight: 700;
-    color: #2962ff;
-    letter-spacing: 0.02em;
-    border-bottom: 2px solid #e8eeff;
+    color: #1e1e32;
+    margin: 0 0 12px 0;
     padding-bottom: 8px;
-    margin-bottom: 14px;
+    border-bottom: 1.5px solid #d0d7e3;
 }
 
 /* ── PDF download button ────────────────────────────────── */
@@ -54,13 +48,18 @@ div[data-testid="stDownloadButton"] > button:hover {
     color: #ffffff !important;
 }
 
-/* ── Analyse button ─────────────────────────────────────── */
+/* ── Analyse button — black background, white text ──────── */
 div[data-testid="stButton"] > button[kind="primary"] {
-    background-color: #2962ff !important;
+    background-color: #111111 !important;
     color: #ffffff !important;
+    border: none !important;
     border-radius: 8px !important;
     font-weight: 600 !important;
     padding: 0.55rem 2rem !important;
+}
+div[data-testid="stButton"] > button[kind="primary"]:hover {
+    background-color: #333333 !important;
+    color: #ffffff !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -147,38 +146,37 @@ if analyse_clicked and uploaded_file is not None:
 
     st.divider()
 
-    # ── Card-style report rendering ───────────────────────────────────────────
+    # ── Bordered-section report rendering ────────────────────────────────────
     _SECTION_RE = re.compile(r"^#{1,3} ", re.MULTILINE)
 
-    def _render_cards(markdown_text: str) -> None:
+    def _render_sections(markdown_text: str) -> None:
         """
         Split the Markdown report on section headings and render each
-        section as an individual card.
+        section (heading + body) inside a single bordered block.
+        No rounded card shell — just a clean border around heading + content.
         """
-        # Find positions of all headings
         heading_starts = [m.start() for m in _SECTION_RE.finditer(markdown_text)]
 
         if not heading_starts:
-            # No headings — render as a single card
-            st.markdown(
-                f'<div class="fm-card">{markdown_text}</div>',
-                unsafe_allow_html=True,
-            )
+            st.markdown(markdown_text)
             return
 
-        # Emit any preamble before the first heading as a plain card
+        # Preamble before the first heading (report title / meta block)
         preamble = markdown_text[: heading_starts[0]].strip()
         if preamble:
-            st.markdown(f'<div class="fm-card">{preamble}</div>', unsafe_allow_html=True)
+            clean = re.sub(r"\n---\s*$", "", preamble).strip()
+            st.markdown(
+                f'<div class="fm-section">{clean}</div>',
+                unsafe_allow_html=True,
+            )
 
-        # Slice each section from its heading start to the next heading start
         for i, start in enumerate(heading_starts):
             end = heading_starts[i + 1] if i + 1 < len(heading_starts) else len(markdown_text)
             section_md = markdown_text[start:end].strip()
             if not section_md:
                 continue
 
-            # Extract the heading line for the card title
+            # Split heading from body
             first_newline = section_md.find("\n")
             if first_newline == -1:
                 heading_line = section_md
@@ -187,18 +185,30 @@ if analyse_clicked and uploaded_file is not None:
                 heading_line = section_md[:first_newline].strip()
                 body_md = section_md[first_newline:].strip()
 
-            # Strip leading #s for display
+            # Remove leading # characters for plain-text heading
             title_text = heading_line.lstrip("#").strip()
+            # Strip trailing horizontal rule from body
+            body_md = re.sub(r"\n---\s*$", "", body_md).strip()
 
-            # Render card: coloured title bar + body markdown
+            # Heading rendered as styled div; body rendered via st.markdown
+            # so tables, bold, lists all get native Streamlit treatment
             st.markdown(
-                f'<div class="fm-card"><div class="fm-card-title">{title_text}</div></div>',
+                f'<div class="fm-section">'
+                f'<div class="fm-section-heading">{title_text}</div>'
+                f'</div>',
                 unsafe_allow_html=True,
             )
             if body_md:
-                # Strip the horizontal rules (---) Markdown adds between sections
-                body_md = re.sub(r"\n---\s*$", "", body_md).strip()
+                # Wrap body in a thin inner container so it visually connects
+                # to the heading border above
                 with st.container():
+                    st.markdown(
+                        f'<div style="border:1.5px solid #d0d7e3; border-top:none; '
+                        f'border-radius:0 0 6px 6px; padding:0 24px 16px 24px; '
+                        f'margin-top:-20px; margin-bottom:20px; background:#ffffff;">',
+                        unsafe_allow_html=True,
+                    )
                     st.markdown(body_md)
+                    st.markdown("</div>", unsafe_allow_html=True)
 
-    _render_cards(result["markdown_report"])
+    _render_sections(result["markdown_report"])
