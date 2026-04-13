@@ -16,8 +16,8 @@ from fpdf import FPDF, XPos, YPos
 
 # ── Colour palette ─────────────────────────────────────────────────────────────
 C_DARK    = (30,  30,  50)    # headings / body text
-C_ACCENT  = (41,  98, 255)    # section bars
-C_LIGHT   = (240, 243, 255)   # alternating table rows
+C_ACCENT  = (17,  17,  17)    # section bars — black (white text on top)
+C_LIGHT   = (240, 240, 240)   # alternating table rows — neutral grey
 C_WHITE   = (255, 255, 255)
 C_RED     = (220,  50,  50)
 C_GREEN   = (34,  139,  34)
@@ -175,7 +175,6 @@ def _cover(pdf: _PDF, meta: dict) -> None:
 
 
 def _executive_summary(pdf: _PDF, report: dict) -> None:
-    pdf.add_page()
     _section_bar(pdf, "1. Executive Summary")
 
     airline  = report.get("airline_analysis", {})
@@ -385,23 +384,16 @@ def build_pdf(json_report: dict) -> bytes:
     loyalty = json_report.get("loyalty_leakage", {})
     insights = json_report.get("insights", [])
 
+    # Cover on its own page; all remaining sections flow continuously
     _cover(pdf, meta)
+
+    pdf.add_page()
     _executive_summary(pdf, json_report)
-
-    pdf.add_page()
     _airline_section(pdf, airline)
-    pdf.ln(4)
     _booking_section(pdf, booking)
-
-    pdf.add_page()
     _route_section(pdf, routes)
-    pdf.ln(4)
     _loyalty_section(pdf, loyalty)
-
-    pdf.add_page()
     _insights_section(pdf, insights)
-
-    pdf.add_page()
     _action_plan(pdf)
 
     return bytes(pdf.output())
