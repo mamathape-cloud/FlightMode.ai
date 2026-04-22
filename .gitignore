@@ -8,3 +8,11 @@ build/
 .pytest_cache/
 output/
 *.log
+
+# Data and document files — not committed to repo
+*.pdf
+*.docx
+*.xlsx
+*.xls
+*_debug.txt
+venv/
