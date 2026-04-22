@@ -148,75 +148,118 @@ if st.session_state.step == 1:
     st.subheader("Step 1 — Upload your travel data")
     st.markdown("Upload an **Excel / CSV** file (structured travel data) or a **PDF** (loyalty statement / travel report — analysed via AWS Bedrock).")
 
-    uploaded_file = st.file_uploader(
-        "Choose a file",
+    uploaded_files = st.file_uploader(
+        "Choose files",
         type=["xlsx", "xls", "csv", "pdf"],
+        accept_multiple_files=True,
         label_visibility="collapsed",
     )
 
-    if uploaded_file:
-        file_size_kb = round(uploaded_file.size / 1024, 1)
-        st.caption(f"📎 {uploaded_file.name}  ·  {file_size_kb} KB")
-        suffix = os.path.splitext(uploaded_file.name)[1].lower()
-        is_pdf = suffix == ".pdf"
+    if uploaded_files:
+        total_kb = round(sum(f.size for f in uploaded_files) / 1024, 1)
+        names = ", ".join(f.name for f in uploaded_files)
+        st.caption(f"📎 {names}  ·  {total_kb} KB total")
 
-        if is_pdf:
-            st.info("PDF detected — FlightMode will use AWS Bedrock to extract travel and loyalty data from this document. This may take 30–90 seconds.")
+        pdfs = [f for f in uploaded_files if os.path.splitext(f.name)[1].lower() == ".pdf"]
+        sheets = [f for f in uploaded_files if os.path.splitext(f.name)[1].lower() in (".xlsx", ".xls", ".csv")]
+
+        if pdfs:
+            st.info(f"{len(pdfs)} PDF(s) detected — FlightMode will use AWS Bedrock to extract travel and loyalty data. This may take 30–90 seconds per file.")
+        if pdfs and sheets:
+            st.warning("Mixed file types detected — PDF(s) will be analysed via Bedrock; Excel/CSV file(s) will be loaded separately and merged.")
 
         if st.button("Extract Data ▶", type="primary"):
-            tmp_path = None
+            tmp_paths = []
             try:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    tmp.write(uploaded_file.read())
-                    tmp_path = tmp.name
+                all_flights = []
+                all_loyalty = []
+                flights_df = pd.DataFrame()
+                loyalty_df = pd.DataFrame()
+                source_names = [f.name for f in uploaded_files]
 
-                if is_pdf:
-                    with st.status("Extracting data from PDF via Bedrock…", expanded=True) as status:
+                if pdfs:
+                    pdf_tmp_paths = []
+                    for f in pdfs:
+                        suffix = os.path.splitext(f.name)[1].lower()
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                            tmp.write(f.read())
+                            pdf_tmp_paths.append(tmp.name)
+                            tmp_paths.append(tmp.name)
+
+                    with st.status(f"Extracting data from {len(pdfs)} PDF(s) via Bedrock…", expanded=True) as status:
                         from bedrock_python.pdf_extractor import extract_from_pdfs
-                        st.write("📄 Reading PDF pages with pdfplumber…")
-                        extraction = extract_from_pdfs([tmp_path])
+                        for i, f in enumerate(pdfs, 1):
+                            st.write(f"📄 [{i}/{len(pdfs)}] Reading {f.name}…")
+                        extraction = extract_from_pdfs(pdf_tmp_paths)
                         if extraction.extraction_errors:
                             for err in extraction.extraction_errors:
                                 st.warning(err)
                         flights_count = len(extraction.flights)
                         loyalty_count = len(extraction.loyalty_credits)
-                        st.write(f"✅ Extracted **{flights_count}** flight records and **{loyalty_count}** loyalty records")
-                        status.update(label=f"Extraction complete — {flights_count} flights, {loyalty_count} loyalty records", state="complete", expanded=False)
+                        st.write(f"✅ Extracted **{flights_count}** flight records and **{loyalty_count}** loyalty records from PDF(s)")
+                        status.update(label=f"PDF extraction complete — {flights_count} flights, {loyalty_count} loyalty records", state="complete", expanded=False)
 
-                    flights_df = pd.DataFrame(extraction.flights) if extraction.flights else pd.DataFrame()
-                    loyalty_df = pd.DataFrame(extraction.loyalty_credits) if extraction.loyalty_credits else pd.DataFrame()
+                    all_flights.extend(extraction.flights)
+                    all_loyalty.extend(extraction.loyalty_credits)
                     st.session_state.file_type = "pdf"
                     st.session_state._pdf_flights = extraction.flights
                     st.session_state._pdf_loyalty = extraction.loyalty_credits
 
-                else:
-                    with st.status("Reading file…", expanded=True) as status:
+                if sheets:
+                    sheet_frames = []
+                    loyalty_frames = []
+                    with st.status(f"Reading {len(sheets)} Excel/CSV file(s)…", expanded=True) as status:
                         from flightmode.core.ingestion import load_sheets
-                        st.write("📂 Parsing sheets and mapping columns…")
-                        travel_df, loyalty_df_raw = load_sheets(tmp_path)
-                        st.write(f"✅ Loaded **{len(travel_df):,}** travel records")
-                        if loyalty_df_raw is not None:
-                            st.write(f"✅ Loaded **{len(loyalty_df_raw):,}** loyalty records")
-                        status.update(label=f"File loaded — {len(travel_df):,} travel records", state="complete", expanded=False)
+                        for f in sheets:
+                            suffix = os.path.splitext(f.name)[1].lower()
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                                tmp.write(f.read())
+                                tmp_paths.append(tmp.name)
+                                tmp_name = tmp.name
+                            st.write(f"📂 Parsing {f.name}…")
+                            t_df, l_df = load_sheets(tmp_name)
+                            sheet_frames.append(t_df)
+                            if l_df is not None:
+                                loyalty_frames.append(l_df)
 
-                    flights_df = travel_df
-                    loyalty_df = loyalty_df_raw if loyalty_df_raw is not None else pd.DataFrame()
-                    st.session_state.file_type = "xlsx"
-                    st.session_state._xlsx_travel = travel_df
-                    st.session_state._xlsx_loyalty = loyalty_df_raw
+                        merged_travel = pd.concat(sheet_frames, ignore_index=True) if sheet_frames else pd.DataFrame()
+                        merged_loyalty = pd.concat(loyalty_frames, ignore_index=True) if loyalty_frames else None
+                        st.write(f"✅ Loaded **{len(merged_travel):,}** travel records from Excel/CSV")
+                        status.update(label=f"Excel/CSV loaded — {len(merged_travel):,} records", state="complete", expanded=False)
+
+                    if pdfs:
+                        # merge xlsx flights into pdf flight list
+                        if not merged_travel.empty:
+                            all_flights.extend(merged_travel.to_dict("records"))
+                        if merged_loyalty is not None:
+                            all_loyalty.extend(merged_loyalty.to_dict("records"))
+                    else:
+                        st.session_state.file_type = "xlsx"
+                        st.session_state._xlsx_travel = merged_travel
+                        st.session_state._xlsx_loyalty = merged_loyalty
+                        flights_df = merged_travel
+                        loyalty_df = merged_loyalty if merged_loyalty is not None else pd.DataFrame()
+
+                if pdfs:
+                    flights_df = pd.DataFrame(all_flights) if all_flights else pd.DataFrame()
+                    loyalty_df = pd.DataFrame(all_loyalty) if all_loyalty else pd.DataFrame()
+                    if sheets:
+                        st.session_state.file_type = "pdf"
+                        st.session_state._pdf_flights = all_flights
+                        st.session_state._pdf_loyalty = all_loyalty
 
                 st.session_state.flights_df = flights_df
                 st.session_state.loyalty_df = loyalty_df
-                st.session_state.source_name = uploaded_file.name
+                st.session_state.source_name = " + ".join(source_names)
                 st.session_state.step = 2
                 st.rerun()
 
             except Exception as e:
                 st.error(f"**Extraction failed:** {e}")
             finally:
-                if tmp_path:
+                for p in tmp_paths:
                     try:
-                        os.unlink(tmp_path)
+                        os.unlink(p)
                     except Exception:
                         pass
 

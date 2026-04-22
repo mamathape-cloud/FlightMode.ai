@@ -203,26 +203,115 @@ Top airline: **{top_airline}** ({top_share}% share)
 ---
 """)
 
-    sections.append("""## 6. Optimization Strategy
+    # ── Build dynamic optimization rows ──────────────────────────────────────
+    def _priority(condition_high, condition_med) -> tuple[str, str]:
+        if condition_high:
+            return "🔴 High", "High"
+        if condition_med:
+            return "🟡 Medium", "Medium"
+        return "🟢 Low", "Low"
+
+    consolidation_icon, _ = _priority(top_share < 60, top_share < 75)
+    booking_icon, _ = _priority(last_min_pct > 30, last_min_pct > 15)
+    loyalty_icon, _ = _priority(
+        loyalty.get("missing_credit_pct", 0) > 30,
+        loyalty.get("missing_credit_pct", 0) > 10,
+    )
+    route_icon = "🟡 Medium" if routes.get("most_frequent_route_count", 0) >= 4 else "🟢 Low"
+
+    top_route = most_freq_route if most_freq_route != "N/A" else "top routes"
+    consolidation_action = (
+        f"Increase {top_airline} share from {top_share}% to 60%+ to unlock tier status"
+        if top_share < 60
+        else f"Maintain {top_airline} consolidation at {top_share}%"
+    )
+    booking_action = (
+        f"Reduce last-minute bookings (currently {last_min_pct}%) — target 10+ day advance booking"
+        if last_min_pct > 15
+        else f"Good booking lead time — maintain ≥10-day advance window"
+    )
+    missing_credits = loyalty.get("missing_credits", 0)
+    loyalty_action = (
+        f"Retro-claim {missing_credits} uncredited flight(s) — estimated ₹{inr_value:,.0f} recovery"
+        if missing_credits > 0
+        else "All flights credited — maintain this discipline"
+    )
+    route_action = f"Negotiate corporate/bulk rates on {top_route}"
+
+    consolidation_value = (
+        f"₹40,000–₹1,20,000/year" if top_share < 60
+        else "Status already protected"
+    )
+    booking_value = (
+        f"₹30,000–₹80,000/year ({last_min_pct}% last-minute rate)" if last_min_pct > 15
+        else "Savings already realized"
+    )
+    loyalty_value = f"₹{inr_value:,.0f} (est.)" if inr_value > 0 else "No leakage detected"
+
+    sections.append(f"""## 6. Optimization Strategy
 
 | Priority | Area | Action | Estimated Value |
 |---|---|---|---|
-| 🔴 High | Airline Consolidation | Concentrate 60%+ on primary airline | ₹40,000–₹1,20,000/year |
-| 🔴 High | Booking Behavior | Shift to 10+ day advance booking | ₹30,000–₹80,000/year |
-| 🟡 Medium | Loyalty Recovery | Retro-claim missing flight credits | Per miles lost (see above) |
-| 🟡 Medium | Route Negotiation | Corporate rates on top routes | ₹25,000–₹60,000/route/year |
-| 🟢 Low | Program Strategy | Align credit card to primary airline | ₹15,000–₹30,000/year |
+| {consolidation_icon} | Airline Consolidation | {consolidation_action} | {consolidation_value} |
+| {booking_icon} | Booking Behavior | {booking_action} | {booking_value} |
+| {loyalty_icon} | Loyalty Recovery | {loyalty_action} | {loyalty_value} |
+| {route_icon} | Route Negotiation | {route_action} | ₹25,000–₹60,000/route/year |
+| 🟢 Low | Program Strategy | Align credit card to {top_airline} for bonus earn | ₹15,000–₹30,000/year |
 
 ---
 """)
 
-    action_items = [
-        "**Within 7 days:** Identify your primary airline target based on route coverage and enroll in their top-tier program.",
-        "**Within 14 days:** Retro-claim any missing flight credits (up to 12 months back).",
-        "**Within 30 days:** Set a travel policy requiring minimum 10-day advance booking for all domestic travel.",
-        "**Within 60 days:** Contact your primary airline's corporate sales team to negotiate route-specific rates.",
-        "**Ongoing:** Review this report quarterly to track loyalty program progression and maintain consolidation discipline.",
-    ]
+    # ── Dynamic action plan ───────────────────────────────────────────────────
+    action_items = []
+    if top_share < 60:
+        action_items.append(
+            f"**Within 7 days:** Enroll in {top_airline}'s top-tier program and set a target "
+            f"to route {max(60, round(top_share + 20))}%+ of flights through them."
+        )
+    else:
+        action_items.append(
+            f"**Within 7 days:** Review {top_airline} tier status requirements — you are well "
+            f"positioned at {top_share}% share to maintain or upgrade."
+        )
+
+    if missing_credits > 0:
+        action_items.append(
+            f"**Within 14 days:** Retro-claim {missing_credits} uncredited flight(s) — "
+            f"most programs allow claims up to 12 months back (estimated ₹{inr_value:,.0f})."
+        )
+    else:
+        action_items.append(
+            "**Within 14 days:** Audit loyalty accounts to confirm all upcoming flights "
+            "are linked to your primary program before travel."
+        )
+
+    if last_min_pct > 15:
+        action_items.append(
+            f"**Within 30 days:** Implement a 10-day advance booking policy — "
+            f"your current last-minute rate is {last_min_pct}%, driving unnecessary fare premiums."
+        )
+    else:
+        action_items.append(
+            "**Within 30 days:** Document your current booking lead-time discipline as a "
+            "travel policy so it scales if more travellers are added."
+        )
+
+    route_count = routes.get("most_frequent_route_count", 0)
+    if route_count >= 3:
+        action_items.append(
+            f"**Within 60 days:** Contact {top_airline}'s corporate sales team to negotiate "
+            f"bulk/corporate rates on {top_route} ({route_count} flights this period)."
+        )
+    else:
+        action_items.append(
+            "**Within 60 days:** Evaluate whether route patterns justify a corporate "
+            "travel account with your primary airline."
+        )
+
+    action_items.append(
+        "**Ongoing:** Review this report quarterly — track tier progress, retro-claim "
+        "credits within 30 days of each flight, and monitor consolidation discipline."
+    )
 
     action_block = "\n".join(f"{i+1}. {item}" for i, item in enumerate(action_items))
     sections.append(f"""## 7. Action Plan
