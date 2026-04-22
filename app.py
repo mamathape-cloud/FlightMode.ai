@@ -42,19 +42,21 @@ div[data-testid="stButton"] > button[kind="secondary"] {
 def _init():
     defaults = {
         "step": 1,
-        "flights_df": None,       # pd.DataFrame for display
-        "loyalty_df": None,       # pd.DataFrame for display
+        "flights_df": None,
+        "loyalty_df": None,
         "json_report": None,
         "markdown_report": None,
         "pdf_bytes": None,
         "chat_history": [],
-        "file_type": None,        # "pdf" | "xlsx"
+        "file_type": None,
         "source_name": "",
-        # internal raw data for analysis step
         "_xlsx_travel": None,
         "_xlsx_loyalty": None,
         "_pdf_flights": None,
         "_pdf_loyalty": None,
+        # staged_files: dict of {filename -> {name, size, data (bytes), suffix}}
+        # bytes are read immediately on upload so they survive Streamlit reruns
+        "staged_files": {},
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -146,122 +148,140 @@ st.divider()
 # ══════════════════════════════════════════════════════════════════════════════
 if st.session_state.step == 1:
     st.subheader("Step 1 — Upload your travel data")
-    st.markdown("Upload an **Excel / CSV** file (structured travel data) or a **PDF** (loyalty statement / travel report — analysed via AWS Bedrock).")
+    st.markdown("Upload **PDF loyalty statements** (analysed via AWS Bedrock) and/or **Excel / CSV** files. You can add files in multiple batches — each browse adds to the queue.")
 
-    uploaded_files = st.file_uploader(
-        "Choose files",
+    # ── File uploader — reads bytes immediately so files survive reruns ────────
+    new_uploads = st.file_uploader(
+        "Add files",
         type=["xlsx", "xls", "csv", "pdf"],
         accept_multiple_files=True,
         label_visibility="collapsed",
+        key="file_uploader",
     )
+    if new_uploads:
+        for f in new_uploads:
+            if f.name not in st.session_state.staged_files:
+                st.session_state.staged_files[f.name] = {
+                    "name": f.name,
+                    "size": f.size,
+                    "data": f.read(),
+                    "suffix": os.path.splitext(f.name)[1].lower(),
+                }
 
-    if uploaded_files:
-        total_kb = round(sum(f.size for f in uploaded_files) / 1024, 1)
-        names = ", ".join(f.name for f in uploaded_files)
-        st.caption(f"📎 {names}  ·  {total_kb} KB total")
+    staged = st.session_state.staged_files
 
-        pdfs = [f for f in uploaded_files if os.path.splitext(f.name)[1].lower() == ".pdf"]
-        sheets = [f for f in uploaded_files if os.path.splitext(f.name)[1].lower() in (".xlsx", ".xls", ".csv")]
+    # ── Show queued files ──────────────────────────────────────────────────────
+    if staged:
+        st.markdown(f"**{len(staged)} file(s) queued:**")
+        for fname, meta in list(staged.items()):
+            col_name, col_size, col_remove = st.columns([6, 2, 1])
+            icon = "📄" if meta["suffix"] == ".pdf" else "📊"
+            col_name.markdown(f"{icon} {fname}")
+            col_size.caption(f"{round(meta['size'] / 1024, 1)} KB")
+            if col_remove.button("✕", key=f"rm_{fname}", help="Remove"):
+                del st.session_state.staged_files[fname]
+                st.rerun()
+
+        pdfs = [m for m in staged.values() if m["suffix"] == ".pdf"]
+        sheets = [m for m in staged.values() if m["suffix"] in (".xlsx", ".xls", ".csv")]
 
         if pdfs:
-            st.info(f"{len(pdfs)} PDF(s) detected — FlightMode will use AWS Bedrock to extract travel and loyalty data. This may take 30–90 seconds per file.")
+            st.info(f"{len(pdfs)} PDF(s) — will be extracted via AWS Bedrock (~30–90 s each).")
         if pdfs and sheets:
-            st.warning("Mixed file types detected — PDF(s) will be analysed via Bedrock; Excel/CSV file(s) will be loaded separately and merged.")
+            st.warning("Mixed types — PDFs via Bedrock, Excel/CSV loaded separately, then merged.")
 
-        if st.button("Extract Data ▶", type="primary"):
-            tmp_paths = []
-            try:
-                all_flights = []
-                all_loyalty = []
-                flights_df = pd.DataFrame()
-                loyalty_df = pd.DataFrame()
-                source_names = [f.name for f in uploaded_files]
+        col_extract, col_clear = st.columns([4, 1])
+        with col_clear:
+            if st.button("Clear all", type="secondary"):
+                st.session_state.staged_files = {}
+                st.rerun()
 
-                if pdfs:
-                    pdf_tmp_paths = []
-                    for f in pdfs:
-                        suffix = os.path.splitext(f.name)[1].lower()
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                            tmp.write(f.read())
-                            pdf_tmp_paths.append(tmp.name)
-                            tmp_paths.append(tmp.name)
-
-                    with st.status(f"Extracting data from {len(pdfs)} PDF(s) via Bedrock…", expanded=True) as status:
-                        from bedrock_python.pdf_extractor import extract_from_pdfs
-                        for i, f in enumerate(pdfs, 1):
-                            st.write(f"📄 [{i}/{len(pdfs)}] Reading {f.name}…")
-                        extraction = extract_from_pdfs(pdf_tmp_paths)
-                        if extraction.extraction_errors:
-                            for err in extraction.extraction_errors:
-                                st.warning(err)
-                        flights_count = len(extraction.flights)
-                        loyalty_count = len(extraction.loyalty_credits)
-                        st.write(f"✅ Extracted **{flights_count}** flight records and **{loyalty_count}** loyalty records from PDF(s)")
-                        status.update(label=f"PDF extraction complete — {flights_count} flights, {loyalty_count} loyalty records", state="complete", expanded=False)
-
-                    all_flights.extend(extraction.flights)
-                    all_loyalty.extend(extraction.loyalty_credits)
-                    st.session_state.file_type = "pdf"
-                    st.session_state._pdf_flights = extraction.flights
-                    st.session_state._pdf_loyalty = extraction.loyalty_credits
-
-                if sheets:
-                    sheet_frames = []
-                    loyalty_frames = []
-                    with st.status(f"Reading {len(sheets)} Excel/CSV file(s)…", expanded=True) as status:
-                        from flightmode.core.ingestion import load_sheets
-                        for f in sheets:
-                            suffix = os.path.splitext(f.name)[1].lower()
-                            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                                tmp.write(f.read())
-                                tmp_paths.append(tmp.name)
-                                tmp_name = tmp.name
-                            st.write(f"📂 Parsing {f.name}…")
-                            t_df, l_df = load_sheets(tmp_name)
-                            sheet_frames.append(t_df)
-                            if l_df is not None:
-                                loyalty_frames.append(l_df)
-
-                        merged_travel = pd.concat(sheet_frames, ignore_index=True) if sheet_frames else pd.DataFrame()
-                        merged_loyalty = pd.concat(loyalty_frames, ignore_index=True) if loyalty_frames else None
-                        st.write(f"✅ Loaded **{len(merged_travel):,}** travel records from Excel/CSV")
-                        status.update(label=f"Excel/CSV loaded — {len(merged_travel):,} records", state="complete", expanded=False)
+        with col_extract:
+            if st.button("Extract Data ▶", type="primary"):
+                tmp_paths = []
+                try:
+                    all_flights, all_loyalty = [], []
+                    flights_df = pd.DataFrame()
+                    loyalty_df = pd.DataFrame()
 
                     if pdfs:
-                        # merge xlsx flights into pdf flight list
-                        if not merged_travel.empty:
-                            all_flights.extend(merged_travel.to_dict("records"))
-                        if merged_loyalty is not None:
-                            all_loyalty.extend(merged_loyalty.to_dict("records"))
-                    else:
-                        st.session_state.file_type = "xlsx"
-                        st.session_state._xlsx_travel = merged_travel
-                        st.session_state._xlsx_loyalty = merged_loyalty
-                        flights_df = merged_travel
-                        loyalty_df = merged_loyalty if merged_loyalty is not None else pd.DataFrame()
+                        pdf_tmp_paths = []
+                        for meta in pdfs:
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=meta["suffix"]) as tmp:
+                                tmp.write(meta["data"])
+                                pdf_tmp_paths.append(tmp.name)
+                                tmp_paths.append(tmp.name)
 
-                if pdfs:
-                    flights_df = pd.DataFrame(all_flights) if all_flights else pd.DataFrame()
-                    loyalty_df = pd.DataFrame(all_loyalty) if all_loyalty else pd.DataFrame()
+                        with st.status(f"Extracting {len(pdfs)} PDF(s) via Bedrock…", expanded=True) as status:
+                            from bedrock_python.pdf_extractor import extract_from_pdfs
+                            for i, meta in enumerate(pdfs, 1):
+                                st.write(f"📄 [{i}/{len(pdfs)}] {meta['name']}…")
+                            extraction = extract_from_pdfs(pdf_tmp_paths)
+                            if extraction.extraction_errors:
+                                for err in extraction.extraction_errors:
+                                    st.warning(err)
+                            fc, lc = len(extraction.flights), len(extraction.loyalty_credits)
+                            st.write(f"✅ {fc} flight records · {lc} loyalty records extracted")
+                            status.update(label=f"PDF extraction complete — {fc} flights, {lc} loyalty", state="complete", expanded=False)
+
+                        all_flights.extend(extraction.flights)
+                        all_loyalty.extend(extraction.loyalty_credits)
+
                     if sheets:
+                        sheet_frames, loyalty_frames = [], []
+                        with st.status(f"Reading {len(sheets)} Excel/CSV file(s)…", expanded=True) as status:
+                            from flightmode.core.ingestion import load_sheets
+                            for meta in sheets:
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=meta["suffix"]) as tmp:
+                                    tmp.write(meta["data"])
+                                    tmp_paths.append(tmp.name)
+                                    tmp_name = tmp.name
+                                st.write(f"📂 {meta['name']}…")
+                                t_df, l_df = load_sheets(tmp_name)
+                                sheet_frames.append(t_df)
+                                if l_df is not None:
+                                    loyalty_frames.append(l_df)
+
+                            merged_travel = pd.concat(sheet_frames, ignore_index=True) if sheet_frames else pd.DataFrame()
+                            merged_loyalty = pd.concat(loyalty_frames, ignore_index=True) if loyalty_frames else None
+                            st.write(f"✅ {len(merged_travel):,} travel records loaded")
+                            status.update(label=f"Excel/CSV loaded — {len(merged_travel):,} records", state="complete", expanded=False)
+
+                        if pdfs:
+                            if not merged_travel.empty:
+                                all_flights.extend(merged_travel.to_dict("records"))
+                            if merged_loyalty is not None:
+                                all_loyalty.extend(merged_loyalty.to_dict("records"))
+                        else:
+                            st.session_state.file_type = "xlsx"
+                            st.session_state._xlsx_travel = merged_travel
+                            st.session_state._xlsx_loyalty = merged_loyalty
+                            flights_df = merged_travel
+                            loyalty_df = merged_loyalty if merged_loyalty is not None else pd.DataFrame()
+
+                    if pdfs:
                         st.session_state.file_type = "pdf"
                         st.session_state._pdf_flights = all_flights
                         st.session_state._pdf_loyalty = all_loyalty
+                        flights_df = pd.DataFrame(all_flights) if all_flights else pd.DataFrame()
+                        loyalty_df = pd.DataFrame(all_loyalty) if all_loyalty else pd.DataFrame()
 
-                st.session_state.flights_df = flights_df
-                st.session_state.loyalty_df = loyalty_df
-                st.session_state.source_name = " + ".join(source_names)
-                st.session_state.step = 2
-                st.rerun()
+                    st.session_state.flights_df = flights_df
+                    st.session_state.loyalty_df = loyalty_df
+                    st.session_state.source_name = " + ".join(staged.keys())
+                    st.session_state.step = 2
+                    st.rerun()
 
-            except Exception as e:
-                st.error(f"**Extraction failed:** {e}")
-            finally:
-                for p in tmp_paths:
-                    try:
-                        os.unlink(p)
-                    except Exception:
-                        pass
+                except Exception as e:
+                    st.error(f"**Extraction failed:** {e}")
+                finally:
+                    for p in tmp_paths:
+                        try:
+                            os.unlink(p)
+                        except Exception:
+                            pass
+    else:
+        st.caption("No files queued yet — click **Browse files** above or drag and drop.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
