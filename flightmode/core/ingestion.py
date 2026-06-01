@@ -150,12 +150,20 @@ def _map_columns(columns: list[str]) -> dict[str, str]:
     return mapping
 
 
-def _prepare_df(df: pd.DataFrame) -> pd.DataFrame:
+def _prepare_df(df: pd.DataFrame) -> tuple[pd.DataFrame, set[str]]:
     """
     Normalize column names, apply flexible mapping, normalize values,
     and ensure all required columns exist.
+
+    Returns:
+        (processed_df, cols_that_existed_originally)
     """
     df = df.copy()
+
+    # Track which required columns existed before processing
+    normalized_original = {_normalize_col(c) for c in df.columns}
+    required_cols = {"airline", "origin", "destination", "booking_date", "travel_date"}
+    cols_that_existed = normalized_original & required_cols
 
     # 1. Normalize column names
     df.columns = [_normalize_col(c) for c in df.columns]
@@ -196,7 +204,7 @@ def _prepare_df(df: pd.DataFrame) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = None
 
-    return df
+    return df, cols_that_existed
 
 
 # ── Sheet resolution ──────────────────────────────────────────────────────────
@@ -227,13 +235,13 @@ def load_sheets(filepath: str) -> tuple[pd.DataFrame, Optional[pd.DataFrame]]:
     - Looks for "Travel_Data" sheet (required) and "Loyalty_Data" sheet (optional).
     - Applies normalize → map → validate before returning.
     - CSV files are also accepted (travel only, loyalty = None).
+    - Missing columns in the original file are skipped (not required if not present).
 
     Returns:
         (travel_df, loyalty_df)  where loyalty_df may be None.
 
     Raises:
-        IngestionError if the file cannot be read, Travel_Data sheet is missing,
-        or required columns are absent after all mapping.
+        IngestionError if the file cannot be read or Travel_Data sheet is missing.
     """
     path = Path(filepath)
     if not path.exists():
@@ -249,11 +257,11 @@ def load_sheets(filepath: str) -> tuple[pd.DataFrame, Optional[pd.DataFrame]]:
             raw_travel = pd.read_csv(filepath)
         except Exception as e:
             raise IngestionError(f"Failed to read CSV: {e}")
-        travel_df = _prepare_df(raw_travel)
-        travel_df = travel_df.dropna(
-            subset=["booking_date", "travel_date", "origin", "destination"]
-        )
-        _validate_travel(travel_df)
+        travel_df, cols_existed = _prepare_df(raw_travel)
+        # Only drop rows for columns that actually existed in the file
+        if cols_existed:
+            travel_df = travel_df.dropna(subset=list(cols_existed))
+        _validate_travel(travel_df, cols_existed)
         print(f"[Ingestion] Final columns: {travel_df.columns.tolist()}")
         print(f"[Ingestion] Rows loaded: {len(travel_df)}")
         return travel_df, None
@@ -278,32 +286,44 @@ def load_sheets(filepath: str) -> tuple[pd.DataFrame, Optional[pd.DataFrame]]:
     loyalty_sheet = _find_sheet(sheet_names, LOYALTY_SHEET_NAMES)
 
     # Prepare travel DataFrame
-    travel_df = _prepare_df(sheets[travel_sheet])
-    travel_df = travel_df.dropna(
-        subset=["booking_date", "travel_date", "origin", "destination"]
-    )
-    _validate_travel(travel_df)
+    travel_df, cols_existed = _prepare_df(sheets[travel_sheet])
+    # Only drop rows for columns that actually existed in the file
+    if cols_existed:
+        travel_df = travel_df.dropna(subset=list(cols_existed))
+    _validate_travel(travel_df, cols_existed)
 
     # Prepare loyalty DataFrame (None if sheet absent or empty)
     loyalty_df: Optional[pd.DataFrame] = None
     if loyalty_sheet and loyalty_sheet != travel_sheet:
         raw_loyalty = sheets[loyalty_sheet]
         if not raw_loyalty.empty:
-            loyalty_df = _prepare_df(raw_loyalty)
+            loyalty_df, _ = _prepare_df(raw_loyalty)
 
     print(f"[Ingestion] Final columns: {travel_df.columns.tolist()}")
     print(f"[Ingestion] Rows loaded: {len(travel_df)}")
     return travel_df, loyalty_df
 
 
-def _validate_travel(df: pd.DataFrame) -> None:
-    """Raise IngestionError if any required column is missing after mapping."""
-    missing = REQUIRED_COLUMNS - set(df.columns)
+def _validate_travel(df: pd.DataFrame, cols_existed: Optional[set[str]] = None) -> None:
+    """
+    Raise IngestionError if required columns are missing from the original file.
+
+    If cols_existed is provided, only validates columns that were actually in the file.
+    This allows processing files with some missing columns (e.g., no booking_date).
+    """
+    # If we know which columns existed, only require those that were in the original
+    if cols_existed is not None:
+        required_to_check = REQUIRED_COLUMNS & cols_existed
+    else:
+        # Fallback: check all required columns
+        required_to_check = REQUIRED_COLUMNS
+
+    missing = required_to_check - set(df.columns)
     if missing:
         raise IngestionError(
             f"Missing required fields after processing: {sorted(missing)}.\n"
-            f"Detected columns: {sorted(df.columns.tolist())}\n"
-            f"Please check column names in your Excel file."
+            f"Detected columns: {sorted(df.columns.tolist())}.\n"
+            f"Note: If your file is missing columns (e.g., booking_date), you can still upload it."
         )
 
 
