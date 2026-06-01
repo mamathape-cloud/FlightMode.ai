@@ -76,19 +76,28 @@ _FLIGHT_COL_LABELS = {
     "pnr": "PNR", "flight_number": "Flight No.", "airline": "Airline",
     "origin": "From", "destination": "To",
     "travel_date": "Travel Date", "booking_date": "Booking Date",
-    "fare": "Fare (₹)", "amount_inr": "Amount (₹)", "amount": "Amount",
+    "fare": "Fare (₹)", "amount_inr": "Amount (INR)", "amount": "Amount",
     "class": "Class", "trip_type": "Trip Type",
     "booking_source": "Booked Via", "route": "Route",
 }
 _LOYALTY_COL_LABELS = {
-    "airline": "Airline", "loyalty_program": "Program",
-    "loyalty_program_name": "Program Name", "program_name": "Program",
-    "loyalty_number": "Loyalty No.", "current_tier": "Tier",
+    "airline": "Airline", "loyalty_program": "Loyalty Program",
+    "loyalty_program_name": "Program Name", "program_name": "Program Name (Alt)",
+    "loyalty_number": "Loyalty No.", "current_tier": "Current Tier",
     "pnr": "PNR", "credited_pnr": "Credited PNR",
-    "travel_date": "Date", "credited_travel_date": "Credited Date", "activity_date": "Activity Date",
+    "travel_date": "Travel Date", "credited_travel_date": "Credited Date", "activity_date": "Activity Date",
     "miles_earned": "Miles Earned", "miles_credited": "Miles Credited",
     "description": "Description",
 }
+
+# Validate at module load that no display labels have duplicates
+def _validate_labels():
+    for label_dict, name in [(_FLIGHT_COL_LABELS, "Flight"), (_LOYALTY_COL_LABELS, "Loyalty")]:
+        values = list(label_dict.values())
+        if len(values) != len(set(values)):
+            duplicates = [v for v in values if values.count(v) > 1]
+            raise ValueError(f"{name} labels have duplicates: {set(duplicates)}")
+_validate_labels()
 
 _PREFERRED_FLIGHT_ORDER = [
     "pnr", "flight_number", "airline", "origin", "destination",
