@@ -107,6 +107,21 @@ def _display_df(df: pd.DataFrame, col_labels: dict, preferred_order: list) -> pd
     """Return a renamed, ordered DataFrame for display — only columns that exist."""
     if df is None or df.empty:
         return pd.DataFrame()
+
+    # Deduplicate column names if they exist (can happen with some Excel files)
+    if df.columns.duplicated().any():
+        seen = {}
+        new_cols = []
+        for col in df.columns:
+            if col in seen:
+                seen[col] += 1
+                new_cols.append(f"{col}_{seen[col]}")
+            else:
+                seen[col] = 1
+                new_cols.append(col)
+        df = df.copy()
+        df.columns = new_cols
+
     cols_present = [c for c in preferred_order if c in df.columns]
     extra = [c for c in df.columns if c not in preferred_order]
     ordered = cols_present + extra

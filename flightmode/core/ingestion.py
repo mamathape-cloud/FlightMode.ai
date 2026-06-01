@@ -160,6 +160,19 @@ def _prepare_df(df: pd.DataFrame) -> pd.DataFrame:
     # 1. Normalize column names
     df.columns = [_normalize_col(c) for c in df.columns]
 
+    # 1a. Deduplicate column names if they exist
+    if df.columns.duplicated().any():
+        seen = {}
+        new_cols = []
+        for col in df.columns:
+            if col in seen:
+                seen[col] += 1
+                new_cols.append(f"{col}_{seen[col]}")
+            else:
+                seen[col] = 1
+                new_cols.append(col)
+        df.columns = new_cols
+
     # 2. Map variant names → canonical names
     mapping = _map_columns(list(df.columns))
     if mapping:
