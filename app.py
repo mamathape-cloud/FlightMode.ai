@@ -82,11 +82,11 @@ _FLIGHT_COL_LABELS = {
 }
 _LOYALTY_COL_LABELS = {
     "airline": "Airline", "loyalty_program": "Program",
-    "loyalty_program_name": "Program", "program_name": "Program",
+    "loyalty_program_name": "Program Name", "program_name": "Program",
     "loyalty_number": "Loyalty No.", "current_tier": "Tier",
-    "pnr": "PNR", "credited_pnr": "PNR",
-    "travel_date": "Date", "credited_travel_date": "Date", "activity_date": "Date",
-    "miles_earned": "Miles", "miles_credited": "Miles",
+    "pnr": "PNR", "credited_pnr": "Credited PNR",
+    "travel_date": "Date", "credited_travel_date": "Credited Date", "activity_date": "Activity Date",
+    "miles_earned": "Miles Earned", "miles_credited": "Miles Credited",
     "description": "Description",
 }
 
