@@ -258,9 +258,10 @@ def load_sheets(filepath: str) -> tuple[pd.DataFrame, Optional[pd.DataFrame]]:
         except Exception as e:
             raise IngestionError(f"Failed to read CSV: {e}")
         travel_df, cols_existed = _prepare_df(raw_travel)
-        # Only drop rows for columns that actually existed in the file
-        if cols_existed:
-            travel_df = travel_df.dropna(subset=list(cols_existed))
+        # Only drop rows for columns that actually existed AND have some data
+        cols_with_data = [c for c in cols_existed if not travel_df[c].isnull().all()]
+        if cols_with_data:
+            travel_df = travel_df.dropna(subset=cols_with_data)
         _validate_travel(travel_df, cols_existed)
         print(f"[Ingestion] Final columns: {travel_df.columns.tolist()}")
         print(f"[Ingestion] Rows loaded: {len(travel_df)}")
@@ -287,9 +288,10 @@ def load_sheets(filepath: str) -> tuple[pd.DataFrame, Optional[pd.DataFrame]]:
 
     # Prepare travel DataFrame
     travel_df, cols_existed = _prepare_df(sheets[travel_sheet])
-    # Only drop rows for columns that actually existed in the file
-    if cols_existed:
-        travel_df = travel_df.dropna(subset=list(cols_existed))
+    # Only drop rows for columns that actually existed AND have some data
+    cols_with_data = [c for c in cols_existed if not travel_df[c].isnull().all()]
+    if cols_with_data:
+        travel_df = travel_df.dropna(subset=cols_with_data)
     _validate_travel(travel_df, cols_existed)
 
     # Prepare loyalty DataFrame (None if sheet absent or empty)
