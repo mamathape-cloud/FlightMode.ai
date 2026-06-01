@@ -76,7 +76,7 @@ _FLIGHT_COL_LABELS = {
     "pnr": "PNR", "flight_number": "Flight No.", "airline": "Airline",
     "origin": "From", "destination": "To",
     "travel_date": "Travel Date", "booking_date": "Booking Date",
-    "fare": "Fare (₹)", "amount_inr": "Amount (₹)", "amount": "Amount (₹)",
+    "fare": "Fare (₹)", "amount_inr": "Amount (₹)", "amount": "Amount",
     "class": "Class", "trip_type": "Trip Type",
     "booking_source": "Booked Via", "route": "Route",
 }
